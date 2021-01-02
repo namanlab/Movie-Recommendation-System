@@ -1,0 +1,1140 @@
+---
+title: "Movie Recommendation System"
+subtitle: "Using Machine Learning to Predict Movie Ratings"
+author: "Naman Agrawal"
+date: "January 1, 2021"
+output:
+ pdf_document:
+    toc: true
+    toc_depth: 5
+always_allow_html: true
+abstract: "The purpose of this project is to use different machine learning approaches to develop a movie recommendation system. The project will first provide an introduction to recommendation systems. This is followed by a description of the data set used to build the system. Some exploratory data analysis has also been done to provide a qualitative and quantitative explanation of the various characteristics of the data set. The project then illustrates the various machine learning models that will be used to compute the required predictions. A comparative analysis of these models has also been done. The project concludes with a brief overview of the results and highlights some future considerations."
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r installing-packages, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+#Installing the required packages:
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(recosystem)) install.packages("recosystem", repos = "http://cran.us.r-project.org")
+if(!require(ggcorrplot)) install.packages("ggcorrplot", repos = "http://cran.us.r-project.org")
+if(!require(ggridges)) install.packages("ggridges", repos = "http://cran.us.r-project.org") 
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org") 
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+if(!require(gridExtra)) install.packages("gridExtra", repos = "http://cran.us.r-project.org")
+if(!require(rmarkdown)) install.packages("rmarkdown", repos = "http://cran.us.r-project.org")
+if(!require(xfun)) install.packages("xfun", repos = "http://cran.us.r-project.org")
+
+#installing tinytex (for report)
+if(!"tinytex" %in% installed.packages()) { tinytex::install_tinytex()} 
+```
+
+\newpage
+
+## Introduction  
+
+The last few decades have witnessed a massive expansion in digital information, giving rise to various Information Filtering (IF) systems. These systems can be used to filter and analyze vast quantities of data through specific algorithms. Recommendation systems are one class of these systems. They can be used to predict user preference for a given item based on user profile as well as the nature of that item. Recommendation systems are of three types: Content Based Recommendation Systems, Collaborative Filtering Recommendation Systems and Hybrid Recommendation Systems. This project will try to build one Hybrid Movie Recommendation System. Such a system would compare the preferences of similar users (collaborative filtering) as well as offer movies that share characteristics with other movies, that were given preference by the user (content-based). To build this system, a model-based approach will be followed, wherein a variety of intermediate-models will be developed based on different Machine Learning Techniques.  
+
+Collaborative-filtering approach will also be used to build a second model through the recosystem package. The assessment of all of these models will be done through their Root Mean Squared Error (RMSE).  
+
+The project will be based on the following methodology:   
+
+1. The data set is downloaded, and split into train set (edx) and test set (validation). The train set is used to build the system and the test set is used exclusively for validation.
+2. The data sets are pre-processed to add on more parameters (or equivalently predictors). Some other parameters, which won't be utilized in the project, are also removed.
+3. The features of the train set (edx) are analyzed individually to garner important information regarding their distribution, frequency, summary statistics, etc.
+4. Models are constructed using the information regarding the features in the train set to predict the user ratings in the test set
+5. A comparative analysis of the different models (based on their root mean squared errors in validation set) is done.  
+
+The project will use R for all of the above-mentioned tasks. The following libraries are required:  
+
+```{r loading-packages, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(caret)
+library(data.table)
+library(lubridate)
+library(recosystem)
+library(ggcorrplot)
+library(ggridges)
+library(tinytex)
+library(kableExtra)
+library(knitr)
+library(gridExtra)
+library(rmarkdown)
+library(xfun)
+```
+
+\newpage
+
+## Data Set Description  
+
+The project uses the 10M version of the MovieLens data set. The data set has been generated by the GroupLens Research Lab. The data can be downloaded and converted into a usable format by the following code:  
+
+```{r extracting-data, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+#Creating a temporary file to store the downloaded data:
+dl <- tempfile()
+
+#Downloading the required file:
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+
+#Extracting and reading the data:
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+
+#Assigning the Column names:
+colnames(movies) <- c("movieId", "title", "genres")
+
+# Save the data set:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+#Final data set:
+movielens <- left_join(ratings, movies, by = "movieId")
+
+```
+
+For further analysis, the data set will be split into train and test sets:  
+
+```{r splitting-data, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Making sure that userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Adding the rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+#Removing the elements we don't require:
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+So, two data sets are created:  
+
+1. edx: This is the train set. It will be used for exploratory data analysis and to develop a variety of models. This data set will also be used for tuning various parameters through cross validation. It contains 90% of the observations of movielens (a total of 9,000,055 observations).
+2. validation: This is the test set. It will be reserved exclusively for testing the final model. A final comparative analysis will also be presented based on the Root Mean Squared Error of the models on the validation set. It contains 10% of the observations of movielens (a total of 999,999 observations).  
+
+Before, further analysis, the data set is pre-processed as follows:  
+
+```{r pre-processing-data, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+edx <- edx %>% mutate(month_rating = month(as_datetime(timestamp)), 
+                      year_release = as.numeric(str_sub(title, -5, -2)),
+                      year_rating = year(as_datetime(timestamp)),
+                      years_lapsed = year_rating - year_release) %>%
+  select(-c("genres", "timestamp", "title"))
+
+
+validation <- validation %>% mutate(month_rating = month(as_datetime(timestamp)), 
+                                    year_release = as.numeric(str_sub(title, -5, -2)),
+                                    year_rating = year(as_datetime(timestamp)),
+                                    years_lapsed = year_rating - year_release) %>%
+  select(-c("genres", "timestamp", "title"))
+
+```
+
+Here, columns indicating year of release of movie (year_release), year of user rating (year_rating), month of user rating (month_rating), and years lapsed between release of movie and year of rating (years_lapsed) are calculated and added. Moreover, columns containing information about movie title, genres, and timestamp (after extracting the useful information) are removed from the data set. These features would not be used in the analysis or the development of models. They also occupy the memory of global environment and therefore increase the computational time. Hence, they are excluded.
+
+The resultant data set edx has 7 attributes and 9,000,055 observations. The project shall now describe the different features of the edx data set:
+
+```{r feature-information, echo=FALSE, message=FALSE, warning=FALSE}
+
+#Creating a data frame with the information about various attributes:
+
+df <- data.frame(Feature = c(colnames(edx)),
+               Explanation = c( "Unique ID for the User",
+                              
+                              "Unique ID for the Movie",
+                              
+                              "A rating between 0 and 5 for the movie",
+                              
+                              "Indicates the month of the rating: 1 indicates January and 12 indicates December" ,
+                              
+                              "Indicates the year of release of the movie",
+                              
+                              "Indicates the year of the rating",
+                              
+                              "Shows the years lapsed between release of movie and year of rating (calculated as the difference between year_rating and year_release"
+               ))
+
+#Using kbl() function to create a beautiful table.
+kbl(df, longtable=T, booktabs=T, caption="Features Information") %>%
+  column_spec(1, width="4.5cm") %>%
+  column_spec(2, width="11cm") %>%
+  kable_styling(latex_options=c("repeat_header"))
+```
+
+The following code describes the summary statistics of the relevant features of the edx data set:    
+
+```{r summary-statistics, echo=TRUE, message=FALSE, warning=FALSE}
+summary(edx) 
+```
+
+One surprising observation is that the years_lapsed is seen to have a negative value. This is likely due to entry errors (an error in the noted timestamp or a wrong year printed beside the movie title). The following code describes the structure of the edx data set:  
+
+```{r data-structure, echo=TRUE, message=FALSE, warning=FALSE}
+str(edx) 
+```
+
+The first 6 rows of the data set 'edx' have been displayed for viewing here.  
+
+```{r view-edx, echo=FALSE, message=FALSE, warning=FALSE}
+#Using kbl to create a nice table showing the first 6 rows of phish:
+kbl(head(edx), longtable=T, booktabs=T, caption="First 6 Rows of the Data Set") %>%
+  column_spec(1:6, width="2cm") %>%
+  kable_styling(latex_options=c("repeat_header")) %>%
+  row_spec(0, angle= 20 )
+```
+
+\newpage
+
+## Exploratory Data Analysis  
+
+Here, different graphs and associated statistics are presented to familiarize the reader with the characteristics of the edx data set.  A correlation heat map has been created for the numeric features of the data set:
+
+```{r correlation-heatmap, echo=TRUE, message=FALSE, warning=FALSE, fig.align="center"}
+ggcorrplot::ggcorrplot(cor(edx), hc.order = TRUE, type = "lower",
+                       lab = TRUE, legend.title = "Correlation") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title="Correlation Heatmap for Selected Features",
+       caption="0 indicates that the correlation is very small")
+```
+
+The correlation heat map shows the pearson correlation coefficients between different features. In most cases the correlation is negligible, except in obvious cases (for example: years_lapsed and year_release; year_release and movieId).  
+
+The number of unique movies and users in edx can be calculated using the following code:  
+
+```{r unique-movies-users, echo=TRUE, message=FALSE, warning=FALSE}
+edx %>% 
+  summarise(number_of_users = n_distinct(userId),
+            nunmber_of_movies = n_distinct(movieId))
+```
+
+&nbsp;  
+&nbsp;  
+
+The following graphs describe the distribution of movies and users by the frequency of ratings:  
+
+```{r movie-user-ratings-distribution, message=FALSE, warning=FALSE, echo=FALSE, out.width="100%", fig.align="center"}
+#Distribution of Movies by Frequency of Ratings
+p1 <- edx %>% 
+  dplyr::count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black", fill="firebrick") + 
+  scale_x_log10() + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Distribution of Movies by \n Frequency of Ratings",
+       x = "MovieId",
+       y = "Frequency of Ratings")
+
+#Distribution of Users by Frequency of Ratings
+p2 <- edx %>%
+  dplyr::count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black", fill="firebrick") + 
+  scale_x_log10() + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Distribution of Users by \n Frequency of Ratings",
+       x = "UserId",
+       y = "Frequency of Ratings")
+
+grid.arrange(p1, p2, ncol = 2)
+
+#Removing variables we don't require any more: 
+#This will be done every time to free up space in Global Environment and increase the computational time.
+rm("p1", "p2")
+```
+
+There are two important observations from the above plot. First, some movies get rated many times more than other movies. Second, some users are more active in rating movies than other users.  
+
+To get a visual idea of the distribution of different ratings, the following bar plot has been made:  
+
+```{r ratings-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="70%"}
+#Count by no. of ratings
+edx %>% 
+  ggplot(aes(rating)) + 
+  geom_histogram(color = "black", fill="firebrick") +
+  scale_y_continuous(labels = scales::comma) + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Distribution of Ratings",
+       x = "Ratings",
+       y = "Frequency")
+```
+
+The bar plot shows that users have a higher tendency to rate in whole numbers. It also shows that in general users tend to give more 3 or 4 star ratings. To get a clear idea of the distribution of ratings (rounded) against the month of the rating, the following ridge plot has been made
+ 
+```{r ratings-month_rating-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="70%"}
+
+#Variation of Ratings with Month of Ratings
+edx %>% 
+  ggplot(aes(x=rating, y=factor(month_rating))) + 
+  geom_density_ridges(fill = "firebrick") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Ratings with Month of Rating",
+       x = "Rating",
+       y = "Month of Rating")
+
+```
+
+This plot shows that the ratings seems to show a very small variation with the month in which the rating was made. The following bar plot shows the variation of ratings (rounded) with the the year of rating:
+
+```{r ratings-year_rating-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Checking the variation of ratings with Year of Ratings
+edx %>% 
+  ggplot(mapping = aes(x = year_rating, fill=factor(round(rating)))) + 
+  geom_histogram() + 
+  scale_fill_brewer(palette="YlOrRd")+ 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Ratings with Years of Ratings",
+       x = "Year of Ratings",
+       y = "Frequency of Ratings",
+       fill = "Ratings (rounded)")
+
+```
+
+The plot shows that the ratings vary irregularly with the year in which the rating was made. Most of the ratings were made in 2000. The following stacked density plot shows the variation of ratings (rounded) with the the year of release:  
+
+```{r ratings-year_release-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Density plot of Release Year of Movie against Ratings:
+edx %>% 
+  ggplot(aes(year_release,  fill= factor(round(rating)))) + 
+  geom_density(position="fill", adjust=7) + 
+  scale_fill_brewer(palette="YlOrRd") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Ratings with Year of Release",
+       x = "Year of Release",
+       y = "Density",
+       fill = "Ratings (rounded)")
+
+```
+
+The plot shows that older movies tend to have a higher proportion of extreme ratings (5s and 0s(rounded)). The variation in other ratings is not very significant. The following stacked density plot shows the variation of ratings (rounded) with the the years lapsed between release and rating:  
+
+```{r ratings-years_lapsed-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Density plot of Years Lapsed against Ratings:
+edx %>% 
+  ggplot(aes(years_lapsed,  fill= factor(round(rating)))) + 
+  geom_density(position="fill", adjust=7) + 
+  scale_fill_brewer(palette="YlOrRd") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Ratings with Years Lapsed",
+       x = "Years Lapsed",
+       y = "Density",
+       fill = "Ratings (rounded)")
+
+```
+
+The plot shows that the extreme ratings (5s and 0s(rounded)) tend to come up more often when more years are lapsed between release and rating.
+
+\newpage
+
+## Machine Learning Models  
+Two main models will be developed in this project. These models will be tested on the validation set and evaluated on the basis of Root Mean Squared Error (RMSE) metric. RMSE is the loss function that quantifies the deviation of the predicted values (predicted ratings) from the actual values (actual ratings). It is mathematically expressed as:  
+$$RMSE = \sqrt{\frac{1}{N}\sum_{u,i} ({{{\hat{y_{u,i}}} - {y_{u,i}}}^{2}})}$$
+
+Here $N$ refers to the total number of user-movie combinations in the data set ${\hat{y_{u,i}}}$ refers to the predicted ratings for movie $i$, and user $u$, ${y_{u,i}}$ refers to the actual ratings (in validation set) for movie $i$, and user $u$. In R, the following function is defined to calculate the value of RMSE, whenever required:  
+
+
+```{r rmse-define, message=FALSE, warning=FALSE}
+true_ratings <- validation$rating
+RMSE <- function(predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+Now, the project will attempt to build the models used for prediction.  
+
+### Hybrid Models  
+
+Here, two kinds of models will be described: Unregularized and Regularized models:  
+
+#### Unregularised models:   
+
+In unregularized models, no additional error term is accounted to penalize large estimates with small sample sizes. The final model will be developed through a variety of intermediate models:  
+
+##### *Intermediate Model 1:*  
+
+The simplest model will assume that all movies will be rated the same, regardless of the movie or the user. Such a model can be expressed as follows:  
+
+$$y_{u,i} = \mu + {\epsilon_{u,i}}$$
+
+Where $y_{u,i}$ refers to actual ratings for movie $i$ by user $u$ in validation set, and $\mu$ refers to the mean ratings of all movies by all users in the train set. The model can be run using the following code:  
+
+
+```{r intermediate-model-1, message=FALSE, warning=FALSE}
+
+#Defining mean ratings (mu):
+mu <- mean(edx$rating)
+
+#Applying the model on validation set:
+predicted_ratings_model_1 <- validation %>%
+  mutate(pred = mu ) %>%
+  pull(pred)
+
+```
+
+The RMSE for the model can be calculated using the RMSE function, previously defined.  
+
+```{r intermediate-model-1-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+model_1_rmse <- RMSE(predicted_ratings_model_1)  
+model_1_rmse
+
+```
+```{r intermediate-model-1-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more: 
+rm("predicted_ratings_model_1")
+
+```
+
+The RMSE for this model is about 1.0612. This is quite high, and therefore not useful.  
+
+##### *Intermediate Model 2:*  
+
+Intuitively, as well as evidently from the data set, it is obvious that some movies get rated better than others. To improvise upon the performance of the model, the movie effect can be included. The new model can be expressed as follows:  
+
+$$y_{u,i} = \mu + b_{i}  + {\epsilon_{u,i}}$$
+
+Here $b_{i}$ refers to the effect on ratings due to movie $i$. The following code enables us to calculate and apply the movie effect:  
+
+```{r intermediate-model-2, message=FALSE, warning=FALSE}
+
+#Defining movie effect:
+movie_avg <- edx %>% 
+  group_by(movieId) %>%
+  summarise(b_i = mean(rating-mu))
+
+#Applying the model on validation set:
+predicted_ratings_model_2 <- validation %>%
+  left_join(movie_avg, by="movieId") %>%
+  mutate(pred = mu + b_i) %>%
+  pull(pred)
+
+```
+
+To show the variation of $b_{i}$ with the movieId, the following scatter plot has been made:  
+
+```{r b_i-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Plotting movie effect against the movieId:
+movie_avg %>% 
+  ggplot(aes(movieId, b_i)) + 
+  geom_point() +
+  scale_x_log10(labels = scales::comma) + 
+  geom_smooth(col="red") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Movie Effect",
+       x = "MovieId",
+       y = "Movie Effect (b_i)")
+
+```
+
+The plot shows that the movie effect varies very irregularly with the movieId. The RMSE for the model can be calculated using the RMSE function, previously defined.  
+
+```{r intermediate-model-2-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+model_2_rmse <- RMSE(predicted_ratings_model_2)
+model_2_rmse
+
+```
+```{r intermediate-model-2-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_model_2")
+
+```
+This reduces the RMSE by about 11%.
+
+##### *Intermediate Model 3:*  
+
+Another way to improve the model's performance is to account for the user effect. The model can be expressed as follows:  
+
+$$y_{u,i} = \mu + b_{i} + b_{u} + {\epsilon_{u,i}}$$
+
+Here $b_{u}$ refers to the effect on ratings due to user $u$. The following code calculates and applies the user effect:  
+
+```{r intermediate-model-3, message=FALSE, warning=FALSE}
+
+#Defining user effect:
+user_avg <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  group_by(userId) %>%
+  summarise(b_u = mean(rating-mu-b_i))
+
+#Applying the model on validation set:
+predicted_ratings_model_3 <- validation %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  mutate(pred = mu + b_i + b_u ) %>%
+  pull(pred)
+
+```
+
+To show the variation of $b_{u}$ with the userId, the following scatter plot has been made:  
+
+```{r b_u-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Plotting user effect against userId:
+user_avg %>% 
+  ggplot(aes(userId, b_u)) + 
+  geom_point() +
+  scale_x_continuous(labels = scales::comma) + 
+  geom_smooth(col="red") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of User Effect",
+       x = "UserId",
+       y = "User Effect (b_u)")
+
+```
+
+The plot shows that user effect varies very irregularly with change in userId. The RMSE for the model can be calculated using the RMSE function, previously defined.  
+
+```{r intermediate-model-3-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+model_3_rmse <- RMSE(predicted_ratings_model_3)
+model_3_rmse
+
+```
+```{r intermediate-model-3-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_model_3")
+
+```
+
+This further reduces the RMSE by about 8.3%.  Now the project will try to include several aspects related to time to account as much variability as possible.
+
+##### *Intermediate model 4:*  
+
+Here, the models are further updated to account for the month of rating effect (the effect on ratings due to the month in which the user made the ratings). The modified model is expressed as follows:  
+
+$$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + {\epsilon_{u,i}}$$
+
+Here $b_{m}$ refers to the effect on ratings due to the month of rating $m$. The following code calculates and applies the month of rating effect:  
+
+```{r intermediate-model-4, message=FALSE, warning=FALSE}
+
+#Defining month of rating effect:
+month_rating_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  group_by(month_rating) %>%
+  summarise(b_m = mean(rating-mu-b_i-b_u))
+
+#Applying the model on validation set:
+predicted_ratings_model_4 <- validation %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  mutate(pred = mu + b_i + b_u + b_m ) %>%
+  pull(pred)
+
+```
+
+To show the variation of $b_{m}$ with the month of rating, the following scatter plot has been made:  
+
+```{r b_m-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Plotting month of rating effect against month:
+month_rating_effect %>% 
+  ggplot(aes(month_rating, b_m)) + 
+  geom_point() + 
+  geom_smooth(col="red") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Month of Rating Effect",
+       x = "Month",
+       y = "Month of Rating Effect (b_m)")
+
+```
+
+The plot shows that in general as more months pass by, $b_{m}$ increases i.e. the users are likely to give a higher rating. The RMSE for the model can be calculated using the RMSE function, previously defined.  
+
+```{r intermediate-model-4-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+model_4_rmse <- RMSE(predicted_ratings_model_4)
+model_4_rmse
+
+```
+```{r intermediate-model-4-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_model_4")
+
+```
+
+This contributes to a very low reduction in RMSE (around 0.00033%).  
+
+##### *Intermediate model 5:*  
+
+The models will now account for the year of release effect (the effect on ratings due to the year in which the movie was released). The modified model is expressed as follows:  
+
+$$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + b_{y} + {\epsilon_{u,i}}$$
+
+Here $b_{y}$ refers to the effect on ratings due to the year of release $y$. The following code calculates and applies the year of release effect:  
+
+```{r intermediate-model-5, message=FALSE, warning=FALSE}
+
+#Defining year of release effect:
+year_release_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  group_by(year_release) %>%
+  summarise(b_y = mean(rating-mu-b_i-b_u-b_m))
+
+#Applying the model on validation set:
+predicted_ratings_model_5 <- validation %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>%
+  mutate(pred = mu + b_i + b_u + b_m +b_y) %>%
+  pull(pred)
+
+```
+
+To show the variation of $b_{y}$ with the year of movie release, the following scatter plot has been made:  
+
+```{r b_y-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Plotting year of release effect against year:
+year_release_effect %>%
+  ggplot(aes(year_release, b_y)) + 
+  geom_point() + 
+  geom_smooth(col="red") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Year of Release Effect",
+       x = "Year",
+       y = "Year of Release Effect (b_y)")
+
+```
+
+The plot shows that in general for older movies, $b_{y}$ is higher i.e. the users are likely to give a higher rating. The RMSE for the model can be calculated using the RMSE function, previously defined.  
+
+```{r intermediate-model-5-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+model_5_rmse <- RMSE(predicted_ratings_model_5)
+model_5_rmse
+
+```
+```{r intermediate-model-5-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_model_5")
+
+```
+
+The inclusion of this effect, thus reduces the RMSE by 0.04% to around 0.865.
+
+##### *Intermediate model 6:*    
+
+The models were previously updated to include month of rating effect. Now, the project shall try to quantify and determine the year of rating effect The modified model is expressed as follows:  
+
+$$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + b_{y} + b_{yr} + {\epsilon_{u,i}}$$
+
+Here $b_{yr}$ refers to the effect on ratings due to the year of rating $yr$. The following code calculates and applies the year of rating effect:  
+
+```{r intermediate-model-6, message=FALSE, warning=FALSE}
+
+#Defining year of rating effect:
+year_rating_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>% 
+  group_by(year_rating) %>%
+  summarise(b_yr = mean(rating-mu-b_i-b_u-b_m-b_y))
+
+#Applying the model on validation set:
+predicted_ratings_model_6 <- validation %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>%
+  left_join(year_rating_effect, by="year_rating") %>%
+  mutate(pred = mu + b_i + b_u + b_m + b_y + b_yr) %>%
+  pull(pred)
+
+```
+
+To show the variation of $b_{yr}$ with the year of rating, the following scatter plot has been made:  
+
+```{r b_yr-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Plotting year of rating effect against year:
+year_rating_effect %>% 
+  ggplot(aes(year_rating, b_yr)) + 
+  geom_point() + 
+  geom_smooth(col="red") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Year of Rating Effect",
+       x = "Year",
+       y = "Year of Rating Effect (b_yr)")
+
+```
+
+The plot shows that the year of rating effect does not vary much  with the year of rating (except in case of early years, during the late 19th century).  The RMSE for the model can be calculated using the RMSE function, previously defined.  
+
+```{r intermediate-model-6-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+model_6_rmse <- RMSE(predicted_ratings_model_6)
+model_6_rmse
+
+```
+```{r intermediate-model-6-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_model_6")
+
+```
+
+The inclusion of this effect, thus reduces the RMSE by 0.008%.  
+
+
+##### *Intermediate model 7:*    
+
+The models will be finally updated to include one additional effect: the years lapsed effect. This effect will account for the differences between year of rating and the year of release. The final unregularised model can be expressed as follows:  
+
+$$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + b_{y} + b_{yr} + b_{yl} + {\epsilon_{u,i}}$$
+
+Here $b_{yl}$ refers to the effect on ratings due to the years lapsed $yl$. The following code calculates and applies the years lapsed effect:  
+
+```{r intermediate-model-7, message=FALSE, warning=FALSE}
+
+#Defining year lapsed effect:
+years_lapsed_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>% 
+  left_join(year_rating_effect, by="year_rating") %>%
+  group_by(years_lapsed) %>%
+  summarise(b_yl = mean(rating-mu-b_i-b_u-b_m-b_y-b_yr))
+
+#Applying the model on validation set:
+predicted_ratings_model_7 <- validation %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>%
+  left_join(year_rating_effect, by="year_rating") %>%
+  left_join(years_lapsed_effect, by="years_lapsed") %>%
+  mutate(pred = mu + b_i + b_u + b_m + b_y + b_yr + b_yl) %>%
+  pull(pred)
+
+```
+
+To show the variation of $b_{yl}$ with the years lapsed, the following scatter plot has been made:  
+
+```{r b_yl-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#Plotting years lapsed effect against year:
+years_lapsed_effect %>% 
+  ggplot(aes(years_lapsed, b_yl)) + 
+  geom_point() + 
+  geom_smooth(col="red") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of Years Lapsed Effect",
+       x = "Years Lapsed",
+       y = "Years Lapsed Effect (b_yl)")
+
+```
+
+The plot shows that the years lapsed effect varies very irregularly  with the years lapsed. However, for very large values of years lapse, the effect becomes very negative or very positive. This also supports the conclusion drawn from a previously plotted graph (Variation of Ratings with Years Lapsed) that extreme ratings (5s and 0s(rounded)) tend to come up more often when more years are lapsed between release and rating. The RMSE for the model can be calculated using the RMSE function, previously defined.  
+
+```{r intermediate-model-7-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+model_7_rmse <- RMSE(predicted_ratings_model_7)
+model_7_rmse
+
+```
+```{r intermediate-model-7-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_model_7")
+
+```
+
+The inclusion of this effect, thus reduces the RMSE by 0.02%.  
+
+#### Regularised Models:  
+
+Regularization is used to penalize large estimates that are formed using small sample sizes. Earlier (under unregularized approach), the final model developed was essentially trying to minimize:
+
+
+$$\sum_{u,i} ({{ {y_{u,i}} - \mu - b_{i} - b_{u} - b_{m} - b_{y} - b_{yr} - b_{yl} }^{2}})$$
+
+But, under regularization, another set of terms is added for penalization. The final regularized model error term can be expressed as:  
+
+$$\sum_{u,i} ({{{y_{u,i}} - \mu - b_{i} - b_{u} - b_{m} - b_{y} - b_{yr} - b_{yl} }})^{2} + 
+ \lambda ( \sum_{i}({b_{i}}^{2}) + \sum_{u}({b_{u}}^{2}) + \sum_{m}({b_{m}}^{2}) + \sum_{y}({b_{y}}^{2}) + \sum_{yr}({b_{yr}}^{2}) + \sum_{yl}({b_{yl}}^{2})  )$$
+
+To minimize the above error, it is important to divide every term (in unregularized mode) by $\lambda$. To determine the value of $\lambda$, parameter tuning is used. For tuning, cross validation is implemented on edx set. The edx set is partitioned into edx train and edx test sets using the following codes:  
+
+
+```{r edx-split-cv, message=FALSE, warning=FALSE}
+
+set.seed(820, sample.kind = "Rounding")
+#Creating the text index
+edx_test_index <- createDataPartition(edx$rating, times=1, p=0.2, list = FALSE)
+
+#Splitting appropriately
+edx_train <- edx[-edx_test_index,] #used for training
+edx_test <- edx[edx_test_index,] #used for tuning
+
+#To ensure only those movies and users are present in edx_test 
+#for which we have observations in edx_train
+edx_test <- edx_test %>% 
+  semi_join(edx_train, by = "movieId") %>%
+  semi_join(edx_train, by = "userId")
+
+```
+
+It is important to note that the edx set itself is used for training and tuning because the validation set is unseen, and thus unavailable for tuning. The validation set will be used only for determining the value of the RMSE. Subsequently, an algorithm is implemented that calculates the RMSE on edx_test for different values of $\lambda$. The following plot shows the variation of RMSE with $\lambda$:
+
+```{r regularization-cv-finding-l, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Defining a sequence of values for lambda(l)
+l <- seq(0, 10, 1)
+
+#Calculating different values of RMSE for different values of l in edx_test:
+rmses <- sapply(l, function(l){
+  #Mean Ratings:
+  mu <- mean(edx_train$rating)
+  #Movie Effect:
+  movie_avg <- edx_train %>% 
+    group_by(movieId) %>%
+    summarise(b_i = sum(rating-mu)/(n()+l))
+  #User Effect
+  user_avg <- edx_train %>%
+    left_join(movie_avg, by="movieId") %>%
+    group_by(userId) %>%
+    summarise(b_u = sum(rating-mu-b_i)/(n()+l))
+  #Month of Rating Effect:
+  month_rating_effect <- edx_train %>%
+    left_join(movie_avg, by="movieId") %>%
+    left_join(user_avg, by="userId") %>%
+    group_by(month_rating) %>%
+    summarise(b_m = sum(rating-mu-b_i-b_u)/(n()+l))
+  #Year of Release Effect:
+  year_release_effect <- edx_train %>%
+    left_join(movie_avg, by="movieId") %>%
+    left_join(user_avg, by="userId") %>%
+    left_join(month_rating_effect, by="month_rating") %>%
+    group_by(year_release) %>%
+    summarise(b_y = sum(rating-mu-b_i-b_u-b_m)/(n()+l))
+  #Year of Rating Effect:
+  year_rating_effect <- edx_train %>%
+    left_join(movie_avg, by="movieId") %>%
+    left_join(user_avg, by="userId") %>%
+    left_join(month_rating_effect, by="month_rating") %>%
+    left_join(year_release_effect, by="year_release") %>% 
+    group_by(year_rating) %>%
+    summarise(b_yr = sum(rating-mu-b_i-b_u-b_m-b_y)/(n()+l))
+  #Years Lapsed Effect:
+  years_lapsed_effect <- edx_train %>%
+    left_join(movie_avg, by="movieId") %>%
+    left_join(user_avg, by="userId") %>%
+    left_join(month_rating_effect, by="month_rating") %>%
+    left_join(year_release_effect, by="year_release") %>% 
+    left_join(year_rating_effect, by="year_rating") %>%
+    group_by(years_lapsed) %>%
+    summarise(b_yl = sum(rating-mu-b_i-b_u-b_m-b_y-b_yr)/(n()+l))
+  #Applying the model on edx_test set:
+  predicted_ratings <- edx_test %>%
+    left_join(movie_avg, by="movieId") %>%
+    left_join(user_avg, by="userId") %>%
+    left_join(month_rating_effect, by="month_rating") %>%
+    left_join(year_release_effect, by="year_release") %>%
+    left_join(year_rating_effect, by="year_rating") %>%
+    left_join(years_lapsed_effect, by="years_lapsed") %>%
+    mutate(pred = mu + b_i + b_u + b_m + b_y + b_yr + b_yl) %>%
+    pull(pred)
+  #Calculating the RMSE:
+  sqrt(mean((edx_test$rating - predicted_ratings)^2))
+})
+
+```
+```{r lambda-RMSE-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="75%"}
+
+#plotting RMSE against lambda (l)
+data.frame(l = l, RMSE = rmses) %>%
+  ggplot(aes(l, RMSE)) + geom_point() + 
+  geom_line()  + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Variation of RMSE (Cross-Validation) with l (lambda)",
+       x = "l (lambda)",
+       y = "RMSE")
+
+```
+
+The value of $\lambda$ that minimizes the RMSE is:
+
+```{r min-lambda, message=FALSE, warning=FALSE}
+
+l[which.min(rmses)]
+
+```
+```{r rm-cv-lambda, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("edx_test_index", "edx_test", "edx_train")
+
+```
+
+Now, this value of $\lambda$ is used to develop a final regularized model on the entire edx set as follows:
+
+```{r regularized-model-8, message=FALSE, warning=FALSE}
+
+#Implementing the required value of l and getting final RMSE on validation set:
+l <- l[which.min(rmses)]
+
+#Mean Ratings:
+mu <- mean(edx$rating)
+
+#Movie Effect:
+movie_avg <- edx %>% 
+  group_by(movieId) %>%
+  summarise(b_i = sum(rating-mu)/(n()+l))
+
+#User Effect:
+user_avg <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  group_by(userId) %>%
+  summarise(b_u = sum(rating-mu-b_i)/(n()+l))
+
+#Month of Rating Effect:
+month_rating_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  group_by(month_rating) %>%
+  summarise(b_m = sum(rating-mu-b_i-b_u)/(n()+l))
+
+#Year of Release Effect:
+year_release_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  group_by(year_release) %>%
+  summarise(b_y = sum(rating-mu-b_i-b_u-b_m)/(n()+l))
+
+#Year of Rating Effect:
+year_rating_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>% 
+  group_by(year_rating) %>%
+  summarise(b_yr = sum(rating-mu-b_i-b_u-b_m-b_y)/(n()+l))
+
+#Years Lapsed Effect:
+years_lapsed_effect <- edx %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>% 
+  left_join(year_rating_effect, by="year_rating") %>%
+  group_by(years_lapsed) %>%
+  summarise(b_yl = sum(rating-mu-b_i-b_u-b_m-b_y-b_yr)/(n()+l))
+
+#Applying the model on validation set:
+predicted_ratings_regularization <- validation %>%
+  left_join(movie_avg, by="movieId") %>%
+  left_join(user_avg, by="userId") %>%
+  left_join(month_rating_effect, by="month_rating") %>%
+  left_join(year_release_effect, by="year_release") %>%
+  left_join(year_rating_effect, by="year_rating") %>%
+  left_join(years_lapsed_effect, by="years_lapsed") %>%
+  mutate(pred = mu + b_i + b_u + b_m + b_y + b_yr + b_yl) %>%
+  pull(pred) 
+
+```
+
+
+The RMSE on the final hybrid model can be calculated as follows:
+
+```{r regularized-model-8-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+rmse_regularization <- RMSE(predicted_ratings_regularization)
+rmse_regularization
+
+```
+```{r regularized-model-8-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_regularization")
+rm("movie_avg", "user_avg", "month_rating_effect", "year_release_effect")
+rm("year_rating_effect", "mu", "l", "years_lapsed_effect")
+
+```
+
+Thus regularization reduces the RMSE by 0.06%
+
+\newpage
+
+### Collaborative Filtering Model
+
+Here, another model is developed base on collaborative filtering. For this model, different user preferences for a movie will be compared to yield a predicted rating for the movie by a given user. This approach will exclude the characteristics of the movie itself (for example, the year in which the movie was released).  
+
+The model will use matrix factorization. Here, the user-item interaction matrix will be decomposed to as a product of two smaller matrices. Such a decomposition will allow the model to explain a greater amount of variability than any of the previously shown models. For this project, matrix factorization will be carried out using the the recosystem package in R.  The following codes demonstrate the usage of the package to develop the required model.
+
+```{r recosystem, message=FALSE, warning=FALSE, results='hide'}
+
+set.seed(820, sample.kind = "Rounding")
+
+# Converting the 'edx' and 'validation' sets to the recosystem input format 
+#(data_memory specifies a data set from R objects)
+edx_reco <-  with(edx, data_memory(user_index = userId, 
+                                   item_index = movieId, 
+                                   rating = rating))
+validation_reco  <-  with(validation, data_memory(user_index = userId, 
+                                                  item_index = movieId, 
+                                                  rating = rating))
+
+# Creating the model object (reco() is used for constructing a Recommender System Object)
+r <-  recosystem::Reco()
+
+# Training the required model (outputting the factorization matrices)
+# nthreads: number of threads for parallel computing:
+r$train(edx_reco, opts = c(nthread = 4))
+
+# Calculating the prediction ratings (out_memory: Result should be returned as R objects)
+predicted_ratings_reco <-  r$predict(validation_reco, out_memory())
+
+```
+
+Once the final predictions are made, the RMSE for the final Matrix-Factorization model can be calculated as follows:
+
+```{r reco-model-9-RMSE, message=FALSE, warning=FALSE}
+
+#Calculating the RMSE:
+rmse_reco <- RMSE(predicted_ratings_reco)
+rmse_reco
+
+```
+```{r reco-model-9-rm, message=FALSE, warning=FALSE, echo = FALSE}
+
+#Removing variables we don't require any more:
+rm("predicted_ratings_reco", "r", "edx_reco", "validation_reco", "true_ratings")
+
+```
+
+Thus, the RMSE in this model is around 3.6 % lesser than the RMSE produced in the hybrid-regularized model.
+
+\newpage
+
+## Result  
+
+After using a variety of final and intermediate models, an RMSE of `r rmse_reco` was achieved. This was made possible by implementing a collaborative-filtering matrix factorization based movie recommendation system using the recosystem package. The following table describes the results of the RMSE values of the models that have been developed so far.
+
+
+| Model | Method/Expression | RMSE |
+| :-------------------------:| :----------------------------------:| :-------------: |
+| $$\text{Intermediate Model 1}$$ | $$y_{u,i} = \mu + {\epsilon_{u,i}}$$ | $$`r model_1_rmse`$$  |
+| $$\text{Intermediate Model 2}$$ | $$y_{u,i} = \mu + b_{i} + {\epsilon_{u,i}}$$ | $$`r model_2_rmse`$$  |
+| $$\text{Intermediate Model 3}$$ | $$y_{u,i} = \mu + b_{i} + b_{u} + {\epsilon_{u,i}}$$ | $$`r model_3_rmse`$$  |
+| $$\text{Intermediate Model 4}$$ | $$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + {\epsilon_{u,i}}$$ | $$`r model_4_rmse`$$  |
+| $$\text{Intermediate Model 5}$$ | $$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + b_{y} + {\epsilon_{u,i}}$$ | $$`r model_5_rmse`$$  |
+| $$\text{Intermediate Model 6}$$ | $$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + b_{y} + b_{yr} + {\epsilon_{u,i}}$$ | $$`r model_6_rmse`$$  |
+| $$\text{Intermediate Model 7}$$ | $$y_{u,i} = \mu + b_{i} + b_{u} + b_{m} + b_{y} + b_{yr} + b_{yl} + {\epsilon_{u,i}}$$ | $$`r model_7_rmse`$$  |
+| $$\text{Hybrid Model}$$ | $$\text{Regularization}$$ | $$`r rmse_regularization`$$  |
+| $$\text{Collaborative Filtering Model}$$ | $$\text{Matrix Factorization}$$ | $$`r rmse_reco`$$  |
+
+\newpage
+
+The following graph has been made to give a visual interpretation for the same:
+
+```{r lresult-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.align="center", out.width="90%"}
+
+#Creating the Required Data frame:
+rmse_results <- data.frame(Model_1 = model_1_rmse,
+                         Model_2 = model_2_rmse,
+                         Model_3 = model_3_rmse,
+                         Model_4 = model_4_rmse,
+                         Model_5 = model_5_rmse,
+                         Model_6 = model_6_rmse,
+                         Model_7 = model_7_rmse,
+                         Model_8 = rmse_regularization,
+                         Model_9 = rmse_reco) %>% as.matrix() %>% t() %>% as.data.frame()
+rownames(rmse_results) <- NULL
+Models<-c("Intermediate Model 1", "Intermediate Model 2", "Intermediate Model 3", "Intermediate Model 4", "Intermediate Model 5", "Intermediate Model 6", "Intermediate Model 7", "Hybrid Model", "Collaborative Filtering Model")
+rmse_results<-cbind(Models, rmse_results)
+colnames(rmse_results)<-c("Model", "RMSE")
+rm("Models")
+rmse_results <- rmse_results %>% arrange(desc(RMSE))
+
+
+#Final Lollipop chart:
+rmse_results %>%
+  ggplot(aes(x=Model, y=RMSE, label=(round(RMSE, 5)) )) +
+  geom_segment(aes(x=Model, xend=Model, y=0, yend=RMSE)) +
+  geom_point() +
+  geom_point(size=5, color="firebrick", fill=alpha("orange", 0.3), alpha=0.7) + 
+  geom_text( position = position_nudge(y = 0.12), size=3.5) +
+  coord_flip() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(size=9),
+        axis.text.y = element_text(size=9)) +
+  labs(title="Validation Set RMSE by Different Models",
+       x="Model",
+       y="RMSE on Validation Set")
+
+```
+
+\newpage
+
+## Conclusion  
+
+Throughout the project, a variety of models have been used, giving different values of RMSE. Among the various models, the collaborative-filtering matrix factorization based movie recommendation system has given the lowest RMSE of `r rmse_reco` on the validation set.  
+
+Meanwhile, it is imperative to recognize the limitations of the project. Firstly, the computational time for some models, particularly regularization, are quite high (around 5-10 minutes). Secondly, a few important predictors (for example the genre effect) have not been accounted for. Lastly, the RMSE for the model is still about 0.8, which means that the model is able to predict user ratings with a large margin of error of about 0.8 stars.
+
+### Future Considerations  
+
+To improve upon the performance of the models, it is suggested that the models be constantly retrained on fresh data sets. In future, one could explore different machine learning techniques such as k-nearest neighbors, gradient boosted decision trees, etc. to further reduce the RMSE. In addition, adaptive sorting algorithms can be developed to exploit the properties of a data set to greatly reduce computational time. Finally, the inclusion of additional features such as movie genre, the actors in the movie, the movie duration, number of ratings done by users in one day, etc. can greatly enhance the performance of the movie recommendation systems.
+
+\newpage
+
+## References  
+
+1. 'Introduction to Data Science: Data Analysis and Prediction Algorithms with R' by Rafael A. Irizarry
+2. 'R Markdown Cookbook' by Yihui Xie, Christophe Dervieux, and Emily Riederer
+3. 'R Markdown: The Definitive Guide' by Yihui Xie, J. J. Allaire, and Garrett Grolemund
+
+
+
+
+
+
+
